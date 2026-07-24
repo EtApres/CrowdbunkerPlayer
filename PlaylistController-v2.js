@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         PlaylistController
+// @name         CrowdBunker Playlist Controller
 // @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  Ajoute un panneau de contrôle de playlist avec lecture automatique, shuffle, boucle et sauvegarde locale
+// @version      3.0
+// @description  Contrôle de playlist avec conservation du contexte de liste
 // @author       VotreNom
 // @match        https://crowdbunker.com/v/*
 // @grant        GM_setValue
@@ -21,11 +21,11 @@
 
     // Configuration
     const CONFIG = {
-        STORAGE_KEY: 'cb_playlist_data_v3',
-        POSITION_KEY: 'cb_playlist_position_v3',
-        SETTINGS_KEY: 'cb_playlist_settings_v3',
+        STORAGE_KEY: 'cb_playlist_data_v4',
+        POSITION_KEY: 'cb_playlist_position_v4',
+        SETTINGS_KEY: 'cb_playlist_settings_v4',
         AUTO_NEXT_DELAY: 3000,
-        CHECK_INTERVAL: 5000 // Vérifie toutes les 5 secondes si la vidéo est terminée
+        CHECK_INTERVAL: 5000
     };
 
     // État du lecteur
@@ -37,14 +37,15 @@
             autoNext: true,
             shuffle: false,
             loop: false,
-            backgroundPlay: true // Nouveau: lecture en arrière-plan
+            backgroundPlay: false
         },
         shuffledIndices: [],
         isShuffled: false,
         videoId: null,
         listId: null,
         isPageLoading: false,
-        pendingNavigation: false
+        pendingNavigation: false,
+        originalListId: null // Stocke l'ID de la liste originale
     };
 
     // ==================== UTILITAIRES ====================
@@ -72,67 +73,94 @@
         
         log('Extraction des vidéos depuis le DOM...');
 
-        // MÉTHODE 1: Récupérer depuis la sidebar de la playlist
-        const sidebarContainers = document.querySelectorAll('.col-md-4 .v-list, .col-md-4 .v-sheet .v-list, [class*="col-md-4"] .v-list');
-        
-        for (const container of sidebarContainers) {
-            const items = container.querySelectorAll('.v-list-item, .list-item, [role="listitem"]');
-            
-            for (const item of items) {
-                const link = item.querySelector('a[href*="/v/"]');
-                if (!link) continue;
+        // Rechercher dans la colonne de droite (la liste)
+        const sidebarSelectors = [
+            '.col-md-4 .v-list',
+            '.col-md-4 .v-sheet .v-list',
+            '.col-md-4 [class*="list"]',
+            '.col-lg-3 .v-list',
+            '.col-lg-3 [class*="list"]',
+            '.v-list--dense',
+            '.v-list'
+        ];
 
-                const href = link.getAttribute('href');
-                const match = href.match(/\/v\/([a-zA-Z0-9]+)/);
-                if (!match) continue;
+        for (const selector of sidebarSelectors) {
+            const containers = document.querySelectorAll(selector);
+            for (const container of containers) {
+                // Vérifier qu'on est dans la colonne de droite
+                const parent = container.closest('.col-md-4, .col-lg-3, .col-12');
+                if (!parent) continue;
 
-                const videoId = match[1];
+                const items = container.querySelectorAll('.v-list-item, .list-item, [role="listitem"]');
                 
-                let title = '';
-                const titleSelectors = [
-                    '.v-list-item__subtitle',
-                    '.v-list-item__subtitle span',
-                    '.white--text.font-weight-bold',
-                    '.font-weight-bold',
-                    '[title]'
-                ];
-                
-                for (const selector of titleSelectors) {
-                    const el = item.querySelector(selector);
-                    if (el) {
-                        title = el.textContent.trim() || el.getAttribute('title') || '';
-                        if (title && title.length > 0) break;
-                    }
-                }
-                
-                if (!title || title.length === 0) {
-                    const textNodes = item.querySelectorAll('*');
-                    for (const node of textNodes) {
-                        const text = node.textContent.trim();
-                        if (text && text.length > 3 && !text.includes('Vidéo') && !text.includes('views') && !text.includes('Il y a')) {
-                            title = text;
-                            break;
+                for (const item of items) {
+                    const link = item.querySelector('a[href*="/v/"]');
+                    if (!link) continue;
+
+                    const href = link.getAttribute('href');
+                    const match = href.match(/\/v\/([a-zA-Z0-9]+)/);
+                    if (!match) continue;
+
+                    const videoId = match[1];
+                    
+                    // Récupérer le titre
+                    let title = '';
+                    const titleSelectors = [
+                        '.v-list-item__subtitle',
+                        '.v-list-item__subtitle span',
+                        '.white--text.font-weight-bold',
+                        '.font-weight-bold',
+                        '[title]',
+                        '.text-truncate'
+                    ];
+                    
+                    for (const ts of titleSelectors) {
+                        const el = item.querySelector(ts);
+                        if (el) {
+                            title = el.textContent.trim() || el.getAttribute('title') || '';
+                            if (title && title.length > 0) break;
                         }
                     }
-                }
+                    
+                    if (!title || title.length === 0) {
+                        const textNodes = item.querySelectorAll('*');
+                        for (const node of textNodes) {
+                            const text = node.textContent.trim();
+                            if (text && text.length > 3 && text.length < 100 && 
+                                !text.includes('Vidéo') && !text.includes('views') && 
+                                !text.includes('Il y a') && !text.includes('http')) {
+                                title = text;
+                                break;
+                            }
+                        }
+                    }
 
-                const durationEl = item.querySelector('.video-duration, .duration, [class*="duration"]');
-                const duration = durationEl ? durationEl.textContent.trim() : '';
+                    const durationEl = item.querySelector('.video-duration, .duration, [class*="duration"]');
+                    const duration = durationEl ? durationEl.textContent.trim() : '';
 
-                if (videoId && !videos.find(v => v.id === videoId)) {
-                    videos.push({
-                        id: videoId,
-                        title: title || `Vidéo ${videos.length + 1}`,
-                        duration: duration,
-                        url: `/v/${videoId}`
-                    });
+                    if (videoId && !videos.find(v => v.id === videoId)) {
+                        videos.push({
+                            id: videoId,
+                            title: title || `Vidéo ${videos.length + 1}`,
+                            duration: duration,
+                            url: `/v/${videoId}`,
+                            fullUrl: `/v/${videoId}?list=${state.listId || getListIdFromUrl()}`
+                        });
+                    }
                 }
+                
+                if (videos.length > 0) break;
             }
+            if (videos.length > 0) break;
         }
 
-        if (videos.length > 0) return videos;
+        if (videos.length > 0) {
+            log(`${videos.length} vidéos trouvées dans la colonne de droite`);
+            return videos;
+        }
 
-        // MÉTHODE 2: Récupérer depuis les liens
+        // Méthode alternative: récupérer depuis tous les liens
+        log('Recherche alternative via tous les liens...');
         const allLinks = document.querySelectorAll('a[href*="/v/"]');
         const seen = new Set();
         
@@ -145,17 +173,17 @@
             if (seen.has(videoId)) continue;
             seen.add(videoId);
             
+            // Vérifier si c'est dans la colonne de droite
+            const parent = link.closest('.col-md-4, .col-lg-3, .col-12');
+            if (!parent) continue;
+            
             let title = link.textContent.trim();
             if (!title || title === href) {
-                const parent = link.closest('div');
-                if (parent) {
-                    const textNodes = parent.querySelectorAll('*');
-                    for (const node of textNodes) {
-                        const text = node.textContent.trim();
-                        if (text && text.length > 3 && text.length < 100 && !text.includes('http')) {
-                            title = text;
-                            break;
-                        }
+                const parentEl = link.closest('.v-list-item, .list-item, div');
+                if (parentEl) {
+                    const titleEl = parentEl.querySelector('.v-list-item__subtitle, .title, .font-weight-bold');
+                    if (titleEl) {
+                        title = titleEl.textContent.trim();
                     }
                 }
             }
@@ -164,17 +192,36 @@
                 id: videoId,
                 title: title || `Vidéo ${videos.length + 1}`,
                 duration: '',
-                url: `/v/${videoId}`
+                url: `/v/${videoId}`,
+                fullUrl: `/v/${videoId}?list=${state.listId || getListIdFromUrl()}`
             });
         }
 
+        log(`${videos.length} vidéos trouvées (alternative)`);
         return videos;
     }
 
     function getCurrentPlaylist() {
-        state.listId = getListIdFromUrl();
+        // Récupérer l'ID de la liste
+        const currentListId = getListIdFromUrl();
+        state.listId = currentListId;
+        
+        // Si on a une liste sauvegardée et qu'on est sur une page sans liste
+        if (!currentListId && state.originalListId) {
+            state.listId = state.originalListId;
+            log(`Utilisation de la liste sauvegardée: ${state.listId}`);
+        }
         
         let videos = extractVideosFromDOM();
+
+        // Si aucune vidéo trouvée mais qu'on a une liste sauvegardée, récupérer depuis le stockage
+        if (videos.length === 0 && state.originalListId) {
+            const savedData = loadPlaylist();
+            if (savedData && savedData.videos && savedData.videos.length > 0) {
+                videos = savedData.videos;
+                log(`Playlist récupérée depuis le stockage: ${videos.length} vidéos`);
+            }
+        }
 
         const currentVideoId = getVideoIdFromUrl();
         const currentInList = videos.find(v => v.id === currentVideoId);
@@ -185,14 +232,20 @@
                 id: currentVideoId,
                 title: currentTitle,
                 duration: '',
-                url: `/v/${currentVideoId}`
+                url: `/v/${currentVideoId}`,
+                fullUrl: `/v/${currentVideoId}?list=${state.listId || ''}`
             });
         }
 
+        // Dédupliquer et mettre à jour les URLs
         const seen = new Set();
         videos = videos.filter(v => {
             if (seen.has(v.id)) return false;
             seen.add(v.id);
+            // Mettre à jour l'URL complète
+            if (state.listId) {
+                v.fullUrl = `/v/${v.id}?list=${state.listId}`;
+            }
             return true;
         });
 
@@ -205,11 +258,16 @@
             state.currentIndex = 0;
         }
 
-        if (videos.length > 0) {
-            savePlaylist(videos, state.currentIndex, state.settings);
+        // Sauvegarder la liste ID originale
+        if (state.listId) {
+            state.originalListId = state.listId;
         }
 
-        log(`Playlist finale: ${videos.length} vidéos`);
+        if (videos.length > 0) {
+            savePlaylist(videos, state.currentIndex, state.settings);
+            log(`Playlist finale: ${videos.length} vidéos avec liste ${state.listId}`);
+        }
+
         return videos;
     }
 
@@ -222,9 +280,11 @@
                 index: index,
                 settings: settings,
                 listId: state.listId,
+                originalListId: state.originalListId,
                 timestamp: Date.now()
             };
             GM_setValue(CONFIG.STORAGE_KEY, JSON.stringify(data));
+            log('Playlist sauvegardée');
         } catch (e) {
             log('Erreur lors de la sauvegarde:', e);
         }
@@ -234,7 +294,9 @@
         try {
             const data = GM_getValue(CONFIG.STORAGE_KEY);
             if (data) {
-                return JSON.parse(data);
+                const parsed = JSON.parse(data);
+                log('Playlist chargée:', parsed.videos.length, 'vidéos');
+                return parsed;
             }
         } catch (e) {
             log('Erreur lors du chargement:', e);
@@ -247,6 +309,7 @@
             GM_setValue(CONFIG.POSITION_KEY, JSON.stringify({
                 index: index,
                 videoId: state.videoId,
+                listId: state.listId,
                 timestamp: Date.now()
             }));
         } catch (e) {}
@@ -333,13 +396,32 @@
         saveCurrentPosition(index);
         savePlaylist(state.videos, index, state.settings);
 
-        const url = video.url || `/v/${video.id}`;
+        // CONSTRUIRE L'URL AVEC LA LISTE
+        let url = video.fullUrl || `/v/${video.id}`;
+        
+        // Si on a un ID de liste, on l'ajoute
+        if (state.listId) {
+            // Vérifier si l'URL contient déjà un paramètre
+            if (url.includes('?')) {
+                // Si l'URL contient déjà un paramètre, ajouter &list=
+                if (!url.includes('list=')) {
+                    url += `&list=${state.listId}`;
+                }
+            } else {
+                url += `?list=${state.listId}`;
+            }
+        } else if (state.originalListId) {
+            // Utiliser la liste originale sauvegardée
+            if (!url.includes('list=')) {
+                url += url.includes('?') ? `&list=${state.originalListId}` : `?list=${state.originalListId}`;
+            }
+        }
+
         log(`Navigation vers: ${url} - ${video.title}`);
         
-        // Notification pour l'utilisateur
         if (state.settings.backgroundPlay) {
             GM_notification({
-                text: `Lecture automatique: ${video.title}`,
+                text: `Lecture: ${video.title}`,
                 title: 'CrowdBunker Playlist',
                 timeout: 5000
             });
@@ -437,18 +519,16 @@
     // ==================== DÉTECTION DE LA FIN DE VIDÉO ====================
 
     let videoCheckInterval = null;
-    let lastVideoTime = 0;
     let videoEnded = false;
 
     function checkVideoStatus() {
         const video = document.querySelector('video');
         if (!video) return;
 
-        // Vérifier si la vidéo est terminée
         if (video.ended || (video.currentTime >= video.duration - 0.5 && video.duration > 0)) {
             if (!videoEnded && state.settings.autoNext && !state.isPageLoading) {
                 videoEnded = true;
-                log('Vidéo terminée détectée par l\'intervalle');
+                log('Vidéo terminée détectée');
                 
                 if (state.settings.backgroundPlay) {
                     GM_notification({
@@ -468,12 +548,10 @@
             videoEnded = false;
         }
 
-        // Mettre à jour l'état de lecture
         if (!video.paused) {
             state.isPlaying = true;
         }
 
-        // Sauvegarder la progression toutes les 5 secondes
         if (video.currentTime % 5 < 1) {
             const progress = {
                 videoId: state.videoId,
@@ -486,7 +564,6 @@
     }
 
     function setupVideoDetection() {
-        // Détection standard via événements
         const observer = new MutationObserver(() => {
             const video = document.querySelector('video');
             if (video && !video._cb_listener) {
@@ -534,7 +611,6 @@
             subtree: true
         });
 
-        // Intervalle de vérification pour les onglets inactifs
         if (videoCheckInterval) {
             clearInterval(videoCheckInterval);
         }
@@ -572,16 +648,35 @@
                 
                 setTimeout(() => {
                     const newVideoId = getVideoIdFromUrl();
+                    const newListId = getListIdFromUrl();
+                    
+                    // Si on a perdu le paramètre list, le restaurer
+                    if (!newListId && state.originalListId) {
+                        log(`Liste perdue, restauration de: ${state.originalListId}`);
+                        // Rediriger avec la liste
+                        const currentUrl = window.location.href;
+                        if (!currentUrl.includes('list=')) {
+                            const newUrl = currentUrl + (currentUrl.includes('?') ? '&' : '?') + `list=${state.originalListId}`;
+                            log(`Restauration de la liste: ${newUrl}`);
+                            window.location.href = newUrl;
+                            return;
+                        }
+                    }
+                    
                     if (newVideoId !== state.videoId) {
                         const newVideos = extractVideosFromDOM();
                         if (newVideos.length > 0) {
                             state.videos = newVideos;
                             state.videoId = newVideoId;
+                            if (newListId) {
+                                state.listId = newListId;
+                                state.originalListId = newListId;
+                            }
                             const currentInList = state.videos.find(v => v.id === newVideoId);
                             state.currentIndex = currentInList ? state.videos.indexOf(currentInList) : 0;
                             savePlaylist(state.videos, state.currentIndex, state.settings);
                             updatePanel();
-                            log('Playlist mise à jour après changement de page');
+                            log('Playlist mise à jour');
                         }
                     }
                     state.isPageLoading = false;
@@ -842,66 +937,17 @@
             </div>
         `;
 
-        // Actions
-        html += `
-            <div style="display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; margin-top: 4px;">
-                <button id="cb-shuffle-list" style="
-                    padding: 3px 10px;
-                    background: rgba(255,255,255,0.05);
-                    border: none;
-                    border-radius: 4px;
-                    color: #aaa;
-                    cursor: ${hasVideos ? 'pointer' : 'not-allowed'};
-                    font-size: 11px;
-                    transition: background 0.2s;
-                    ${!hasVideos ? 'opacity: 0.3;' : ''}
-                " ${!hasVideos ? 'disabled' : ''}>🎲 Mélanger</button>
-                <button id="cb-save" style="
-                    padding: 3px 10px;
-                    background: rgba(255,255,255,0.05);
-                    border: none;
-                    border-radius: 4px;
-                    color: #aaa;
-                    cursor: pointer;
-                    font-size: 11px;
-                    transition: background 0.2s;
-                ">💾 Sauvegarder</button>
-                <button id="cb-export-json" style="
-                    padding: 3px 10px;
-                    background: rgba(255,255,255,0.05);
-                    border: none;
-                    border-radius: 4px;
-                    color: #aaa;
-                    cursor: pointer;
-                    font-size: 11px;
-                    transition: background 0.2s;
-                ">📤 Export</button>
-                <button id="cb-import-json" style="
-                    padding: 3px 10px;
-                    background: rgba(255,255,255,0.05);
-                    border: none;
-                    border-radius: 4px;
-                    color: #aaa;
-                    cursor: pointer;
-                    font-size: 11px;
-                    transition: background 0.2s;
-                ">📥 Import</button>
-            </div>
-        `;
-
-        // Info
-        const total = videos.length;
-        const current = total > 0 ? currentIndex + 1 : 0;
+        // Info liste
         html += `
             <div style="font-size: 10px; color: #444; text-align: center; margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);">
-                ${total} vidéos • ${current}/${total}
+                ${videos.length} vidéos • ${currentIndex + 1}/${videos.length}
+                ${state.listId ? ` • 📋 ${state.listId.substring(0, 8)}...` : ''}
                 ${state.isPageLoading ? ' • ⏳ Chargement...' : ''}
-                ${state.settings.backgroundPlay ? ' • 🌙 BG' : ''}
+                ${settings.backgroundPlay ? ' • 🌙 BG' : ''}
             </div>
         `;
 
         content.innerHTML = html;
-
         setupEventListeners();
     }
 
@@ -941,13 +987,6 @@
                 state.settings.backgroundPlay = e.target.checked;
                 saveSettings(state.settings);
                 log('Background play:', state.settings.backgroundPlay);
-                if (state.settings.backgroundPlay) {
-                    GM_notification({
-                        text: 'Mode arrière-plan activé - Vous serez notifié des changements',
-                        title: 'CrowdBunker Playlist',
-                        timeout: 3000
-                    });
-                }
             });
         }
 
@@ -1020,6 +1059,7 @@
                     index: state.currentIndex,
                     settings: state.settings,
                     listId: state.listId,
+                    originalListId: state.originalListId,
                     timestamp: Date.now(),
                     url: window.location.href
                 };
@@ -1053,6 +1093,10 @@
                                 if (data.settings) {
                                     state.settings = { ...state.settings, ...data.settings };
                                 }
+                                if (data.listId) {
+                                    state.listId = data.listId;
+                                    state.originalListId = data.listId;
+                                }
                                 savePlaylist(state.videos, state.currentIndex, state.settings);
                                 updatePanel();
                                 log('Import réussi:', data.videos.length, 'vidéos');
@@ -1085,7 +1129,7 @@
     // ==================== INITIALISATION ====================
 
     function init() {
-        log('Initialisation du Playlist Controller v2.0');
+        log('Initialisation du Playlist Controller v3.0');
 
         const videoId = getVideoIdFromUrl();
         if (!videoId) {
@@ -1099,11 +1143,18 @@
             state.settings = { ...state.settings, ...savedSettings };
         }
 
+        // Récupérer l'ID de la liste
+        const currentListId = getListIdFromUrl();
+        if (currentListId) {
+            state.listId = currentListId;
+            state.originalListId = currentListId;
+        }
+
         // Charger la playlist
         const savedData = loadPlaylist();
-        const savedPosition = loadCurrentPosition();
-
+        
         if (savedData && savedData.videos && savedData.videos.length > 0) {
+            // Vérifier si la vidéo actuelle est dans la playlist sauvegardée
             const currentInSaved = savedData.videos.find(v => v.id === videoId);
             if (currentInSaved) {
                 state.videos = savedData.videos;
@@ -1111,22 +1162,29 @@
                 if (savedData.settings) {
                     state.settings = { ...state.settings, ...savedData.settings };
                 }
+                if (savedData.listId && !state.listId) {
+                    state.listId = savedData.listId;
+                    state.originalListId = savedData.listId;
+                }
                 log('Playlist chargée depuis la sauvegarde:', state.videos.length, 'vidéos');
             } else {
+                // Si la vidéo actuelle n'est pas dans la playlist, on recharge
                 getCurrentPlaylist();
             }
         } else {
-            const extracted = extractVideosFromDOM();
-            if (extracted.length > 0) {
-                state.videos = extracted;
-                state.videoId = videoId;
-                const currentInList = state.videos.find(v => v.id === videoId);
-                state.currentIndex = currentInList ? state.videos.indexOf(currentInList) : 0;
-                savePlaylist(state.videos, state.currentIndex, state.settings);
-            } else {
-                setTimeout(() => {
-                    getCurrentPlaylist();
-                }, 2000);
+            // Première visite, extraire la playlist
+            getCurrentPlaylist();
+        }
+
+        // Vérifier si on a perdu le paramètre list
+        if (!state.listId && state.originalListId) {
+            state.listId = state.originalListId;
+            const currentUrl = window.location.href;
+            if (!currentUrl.includes('list=')) {
+                const newUrl = currentUrl + (currentUrl.includes('?') ? '&' : '?') + `list=${state.originalListId}`;
+                log(`Restauration de la liste: ${newUrl}`);
+                window.location.href = newUrl;
+                return;
             }
         }
 
@@ -1166,7 +1224,7 @@
         init();
     }
 
-    // Nettoyer l'intervalle lors du déchargement
+    // Nettoyer l'intervalle
     window.addEventListener('beforeunload', () => {
         if (videoCheckInterval) {
             clearInterval(videoCheckInterval);
