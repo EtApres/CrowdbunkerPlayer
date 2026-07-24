@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         CrowdBunker Playlist Controller
+// @name         PlaylistController
 // @namespace    http://tampermonkey.net/
 // @version      2.0
 // @description  Ajoute un panneau de contrôle de playlist avec lecture automatique, shuffle, boucle et sauvegarde locale
