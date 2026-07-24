@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         CrowdBunker Playlist Controller
+// @name         CrowdBunkerPlayer
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      2.0
 // @description  Contrôle de playlist avec conservation du contexte de liste
-// @author       VotreNom
+// @author       EtAprès?
 // @match        https://crowdbunker.com/v/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -439,7 +439,7 @@
             if (state.settings.backgroundPlay) {
                 GM_notification({
                     text: 'Fin de la playlist atteinte',
-                    title: 'CrowdBunker Playlist',
+                    title: 'CrowdBunkerPlayer',
                     timeout: 5000
                 });
             }
@@ -533,7 +533,7 @@
                 if (state.settings.backgroundPlay) {
                     GM_notification({
                         text: `Prochaine vidéo dans ${CONFIG.AUTO_NEXT_DELAY/1000}s...`,
-                        title: 'CrowdBunker Playlist',
+                        title: 'CrowdBunkerPlayer',
                         timeout: 3000
                     });
                 }
@@ -577,7 +577,7 @@
                         if (state.settings.backgroundPlay) {
                             GM_notification({
                                 text: `Prochaine vidéo dans ${CONFIG.AUTO_NEXT_DELAY/1000}s...`,
-                                title: 'CrowdBunker Playlist',
+                                title: 'CrowdBunkerPlayer',
                                 timeout: 3000
                             });
                         }
@@ -833,10 +833,6 @@
                 <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #ccc; cursor: pointer; grid-column: 1 / -1;">
                     <input type="checkbox" id="cb-loop" ${settings.loop ? 'checked' : ''}>
                     🔁 Boucle
-                </label>
-                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #ccc; cursor: pointer; grid-column: 1 / -1; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 4px;">
-                    <input type="checkbox" id="cb-background" ${settings.backgroundPlay ? 'checked' : ''}>
-                    🌙 Mode arrière-plan (notifications)
                 </label>
             </div>
         `;
@@ -1129,7 +1125,7 @@
     // ==================== INITIALISATION ====================
 
     function init() {
-        log('Initialisation du Playlist Controller v3.0');
+        log('Initialisation du PlaylistController v2.0');
 
         const videoId = getVideoIdFromUrl();
         if (!videoId) {
